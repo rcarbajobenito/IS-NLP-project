@@ -1,0 +1,293 @@
+---
+title: "Intelligent Systems NLP Project"
+author: "Rodrigo Carbajo Benito"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Problem
+
+In this project, the reviews of different drugs will be analysed to then be classified into the categories bad, neutral, and good based on the rating that the users of the drug gave them. Knowing which drugs are more accepted or useful for the consumers can be very useful for pharmaceutical companies, not only to define the drugs produced by the company with the best and worst acceptance in the market, but also to do so with the products of other competitor companies.
+
+
+## Experiments done
+
+To address the problem explained above, the following steps have been followed.
+
+### 1. Loading the data
+
+The data set was extracted from the UCI Machine Learning Repository (<https://archive.ics.uci.edu/ml/datasets/Drug+Review+Dataset+%28Drugs.com%29>). It is split into train a test csv, but it has also been loaded all together. As it can be seen, the data set contains 9 attributes, which correspond to the identifier, the name of the drug, the condition the drug is used for, the review of the user, the rating that the user gives to the drug, the date, a count of people who found that review useful, the label, which was constructed by discretizing the ratings in three intervals: bad (1-4), neutral (5-7) and good (8-10), and finally whether the instance corresponds to the train or test set.
+
+```{r}
+drug_train <- read.csv("UCIdrug_train.csv")
+drug_test <- read.csv("UCIdrug_test.csv")
+drug <- read.csv("UCIdrugs.csv")
+
+head(drug)
+```
+
+### 2. Basic checks
+
+After loading the data, some basic checks such as the encoding or the character normalization are performed.
+
+```{r, results='hide', message=FALSE}
+library(utf8)  
+library(dplyr)
+```
+
+```{r}
+# Column selection
+reviews_train <- pull(select(drug_train, "review"))
+reviews_test <- pull(select(drug_test, "review"))
+
+# Check the encoding of the reviews for training and test texts. If the output is character(0), all the reviews are made of correct UTF-8 characters.
+reviews_train[!utf8_valid(reviews_train)]
+reviews_test[!utf8_valid(reviews_test)]
+```
+
+```{r}
+# Check character normalization (Normalized Composed Form) for training and test texts
+reviews_train_NFC <- utf8_normalize(reviews_train)
+reviews_test_NFC <- utf8_normalize(reviews_test)
+
+# If the outputs are 0, the texts are in NFC
+sum(reviews_train_NFC != reviews_train)
+sum(reviews_test_NFC != reviews_test)
+```
+
+### 3. Sentiment analysis
+
+Prior to the classification of the reviews, sentiment analysis is used to get an idea of the words present in the texts that contribute more to a positive or negative feeling. This words will be probably related with the classification of a review as good, bad or neutral.
+
+To do this, the data set is transformed into a corpus and then into a document-feature matrix, with tokenization and cleaning of the data performed at the same time.
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+library(quanteda)
+
+# Use data as corpus
+corpus <- corpus(drug, text_field = "review")
+
+# Transform corpus into DFM
+dfmat <- dfm(tokens(corpus) %>% tokens_tolower(),
+             remove_punct = TRUE, remove_numbers = TRUE,  remove_symbols = TRUE) %>%
+  dfm_remove(stopwords('english'))
+```
+
+As it is done in the work "Converting to and from Document-Term Matrix and Corpus objects" (Julia Silge and David Robinson), some tasks related to sentiment analysis are performed.
+
+```{r, warning=FALSE}
+# Prior to the classification, we can do some sentiment analysis
+library(tidyr)
+library(tidytext)
+
+dfmat_sentiments <- tidy(dfmat)
+
+dfmat_sentiments <- dfmat_sentiments %>%
+  inner_join(get_sentiments("bing"), by = c(term = "word"))
+
+dfmat_sentiments
+```
+
+The count of different positive and negative words can be seen for each of the texts.
+
+```{r}
+dfmat_sentiments %>%
+  count(document, sentiment, wt = count) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative) %>%
+  arrange(sentiment)
+```
+
+The documents with the most negative feelings can be detected.
+
+```{r, fig.align ='center', fig.height=10, fig.width=15}
+library (ggplot2)
+dfmat_sentiments %>%
+  count(sentiment, term, wt = count) %>%
+  filter(n >= 4000) %>%
+  mutate(n = ifelse(sentiment == "negative", -n, n)) %>%
+  mutate(term = reorder(term, n)) %>%
+  ggplot(aes(term, n, fill = sentiment)) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ylab("Contribution to sentiment")
+```
+
+Or the contribution of the words to a positive or negative feeling (the strongest ones). With a high probability, the reviews that contain these words will be easier to classify as positive feelings can be associated to a good review and negative feelings to a bad one.
+
+### 4. Text classification: reviews into good, neutral or bad
+
+After this exploration of the data, supervised classification models are going to be trained to predict whether a review is good or bad based on the words it contains.
+
+```{r}
+# Split into train and test to train the machine learning models
+dfm_train <- dfm_subset(dfmat, set == "train")
+dfm_test <- dfm_subset(dfmat, set == "test")
+
+```
+
+#### Naive Bayes Classifier
+As in the hands on, a Naive Bayes model was used, which is simple but very powerful as it has a similar performance in general to some other more complex models.
+
+```{r message=FALSE, warning=FALSE}
+library(quanteda.textmodels)
+library(caret)
+
+# Train the model (using multinomial distribution as it presented the same results in this case, in contrast to the results of the hands on )
+model_nb <- textmodel_nb(dfm_train,
+                      dfm_train$label,
+                      distribution = "multinomial")
+
+# Prediction of the labels
+pred_nb <- predict(model_nb,
+                newdata = dfm_test)
+
+# Compute the confusion matrix 
+confM_nb <- confusionMatrix(table(pred_nb, docvars(dfm_test)$label))
+
+# Compute the accuracy
+acc_coincidences <- sum(as.character(pred_nb) == as.character(docvars(dfm_test)$label))
+acc_total <- length(as.character(pred_nb))
+acc_nb <- acc_coincidences/acc_total
+acc_nb
+
+# Show the metrics by class
+confM_nb[["byClass"]]
+
+```
+
+#### Support Vector Machine Classifier
+In the hands on it was learned that to train a SVM model, a sample of the original data needed to be taken as otherwise an error will appear due to the dimensionality of the data. SVM models are widely used because they offer very good results in classification problems. In this experiment, different sample sizes have been used to compare how metrics changed when the sample was increased.
+
+```{r, warning=FALSE}
+set.seed(23)
+svmPredictions <- function(x,
+                           weight){ #weight can be "uniform", "docfreq" or "termfreq".
+  
+  # Sample of documents 
+  dfmat_train <- dfm_sample(dfm_subset(dfmat, set == "train"), x)
+  
+  dfmat_test <- dfm_subset(dfmat, set == "test")
+  
+  # Train the SVM model with the sample
+  model_svm <- textmodel_svm(dfmat_train,
+                         dfmat_train$label,
+                         weight = weight)
+  
+  # Prediction of the labels
+  pred_svm <- predict(model_svm,
+                  newdata = dfmat_test)
+  
+  # Compute the confusion matrix 
+  confM_svm <- confusionMatrix(table(pred_svm, docvars(dfmat_test)$label))
+  
+  # Compute the accuracy
+  acc_coincidences <- sum(as.character(pred_svm) == as.character(docvars(dfmat_test)$label))
+  acc_total <- length(as.character(pred_svm))
+  acc_svm <- acc_coincidences/acc_total
+  acc_svm
+  
+  # Show the metrics by class
+  confM_svm[["byClass"]]
+
+}
+
+# Results for a sample size of 10000 and uniform weight
+svmPredictions(10000, "uniform")
+```
+
+These are the results for the SVM when it is trained using 10,000 samples. Now, the results of the model trained with several sample sizes are going to be computed and stored to plot them in some graphs.
+
+```{r, warning=FALSE}
+# Lists to save the precision and recall values for different sample sizes
+results_recall_bad <- list()
+results_recall_neutral <- list()
+results_recall_good <- list()
+
+results_precision_bad <- list()
+results_precision_neutral <- list()
+results_precision_good <- list()
+
+
+for (i in seq(100, 10000, by = 100)){
+  set.seed(23)
+  
+  # Sample of documents 
+  dfmat_train <- dfm_sample(dfm_subset(dfmat, set == "train"), i)
+  dfmat_test <- dfm_subset(dfmat, set == "test")
+  
+  # Train the SVM model with the sample
+  model_svm <- textmodel_svm(dfmat_train,
+                         dfmat_train$label,
+                         weight = "uniform")
+  
+  # Prediction of the labels
+  pred_svm <- predict(model_svm,
+                  newdata = dfmat_test)
+  
+  # Compute the confusion matrix 
+  confM_svm <- confusionMatrix(table(pred_svm, docvars(dfmat_test)$label))
+  
+  # Store the metrics on the lists
+  results_recall_bad <- append(results_recall_bad, confM_svm$byClass[1, 1])
+  results_recall_neutral <- append(results_recall_neutral, confM_svm$byClass[3, 1])
+  results_recall_good <- append(results_recall_good, confM_svm$byClass[2, 1])
+  
+  results_precision_bad <- append(results_precision_bad, confM_svm$byClass[1, 3])
+  results_precision_neutral <- append(results_precision_neutral, confM_svm$byClass[3, 3])
+  results_precision_good <- append(results_precision_good, confM_svm$byClass[2, 3])
+}
+
+
+# Store data in a data frame
+df <-data.frame(sample_size = seq(100, 10000, by = 100))
+df$precision_bad = unlist(results_precision_bad)
+df$precision_neutral = unlist(results_precision_neutral)
+df$precision_good = unlist(results_precision_good)
+df$recall_bad = unlist(results_recall_bad)
+df$recall_neutral = unlist(results_recall_neutral)
+df$recall_good = unlist(results_recall_good)
+```
+
+We now plot the sample size vs the precision for each class.
+
+```{r, fig.align ='center', fig.height=5, fig.width=10}
+# Plot the precision evolution
+ggplot(df, aes(x = sample_size)) + 
+  geom_line(data = df, aes(y = precision_bad, colour = "Bad")) +
+  geom_line(data = df, aes(y = precision_neutral, colour = "Neutral")) +
+  geom_line(data = df, aes(y = precision_good, colour = "Good")) +
+  xlab("Sample size") +
+  ylab("Precision for each class") +
+  theme_minimal()+
+  ggtitle("Sample size vs precision for each class") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_colour_manual("", 
+                      breaks = c("Bad", "Neutral",  "Good"),
+                      values = c("orange", "gray", "blue")) 
+```
+
+
+And the sample class vs the recall of each class.
+
+```{r, fig.align ='center', fig.height=5, fig.width=10}
+# Plot the recall evolution
+ggplot(df, aes(x = sample_size)) + 
+  geom_line(data = df, aes(y = recall_bad, colour = "Bad")) +
+  geom_line(data = df, aes(y = recall_neutral, colour = "Neutral")) +
+  geom_line(data = df, aes(y = recall_good, colour = "Good")) +
+  xlab("Sample size") +
+  ylab("Recall for each class") +
+  theme_minimal()+
+  ggtitle("Sample size vs recall for each class") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_colour_manual("", 
+                      breaks = c("Bad", "Neutral",  "Good"),
+                      values = c("orange", "gray", "blue")) 
+```
+
