@@ -7,6 +7,6 @@ In this project, the reviews of different drugs will be analysed to then be clas
 The dataset is available at https://archive.ics.uci.edu/ml/datasets/Drug+Review+Dataset+%28Drugs.com%29
 
 ## Running the code
-
+The code is provided both as a R and a RMD files. To replicate the results simply run one of those scripts, making sure the data is in the same folder.
 ## Author
 Rodrigo Carbajo Benito
